@@ -1,5 +1,8 @@
 # 安装依赖包
 ```shell
+sudo update
+sudo apt install build-essential g++
+sudo apt install python3-dev
 pip install uv
 uv sync
 ```

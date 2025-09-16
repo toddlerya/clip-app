@@ -1,18 +1,14 @@
 jtype: Flow
 version: "1"
 with:
-  port: 51000
+  port: 61000
 executors:
   - name: encoder
-    replicas: 4
     uses:
       jtype: CLIPEncoder
       with:
-        name: "ViT-B-32::openai"
-        num_worker_preprocess: 4
-        minibatch_size: 32
-        device: "cpu"
-        jit: False
+        model_name: ViT-B/32
+        device: cpu
       metas:
         py_modules:
           - clip_server.executors.clip_torch
@@ -22,6 +18,8 @@ executors:
       jtype: AnnLiteIndexer
       with:
         n_dim: 512
+        limit: 10
+        sync_bulk: True # 强制同步写入（关键修复）
       metas:
         py_modules:
           - annlite.executor

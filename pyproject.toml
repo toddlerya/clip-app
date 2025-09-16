@@ -6,5 +6,5 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "clip-client>=0.8.3",
-    "clip-server>=0.8.3",
+    "clip-server[search]>=0.8.3",
 ]
