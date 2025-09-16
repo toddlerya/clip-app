@@ -1,0 +1,28 @@
+jtype: Flow
+version: "1"
+with:
+  port: 51000
+executors:
+  - name: encoder
+    replicas: 4
+    uses:
+      jtype: CLIPEncoder
+      with:
+        name: "ViT-B-32::openai"
+        num_worker_preprocess: 4
+        minibatch_size: 32
+        device: "cpu"
+        jit: False
+      metas:
+        py_modules:
+          - clip_server.executors.clip_torch
+
+  - name: indexer
+    uses:
+      jtype: AnnLiteIndexer
+      with:
+        n_dim: 512
+      metas:
+        py_modules:
+          - annlite.executor
+    workspace: "./workspace"

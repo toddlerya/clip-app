@@ -1,0 +1,10 @@
+[project]
+name = "clip-app"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "clip-client>=0.8.3",
+    "clip-server>=0.8.3",
+]
