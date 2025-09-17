@@ -4,4 +4,13 @@ version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = ["clip-client>=0.8.3", "clip-server[search]>=0.8.3"]
+dependencies = [
+    "clip-client>=0.8.3",
+    "clip-server[search]>=0.8.3",
+    "faiss-cpu>=1.12.0",
+    "fastapi>=0.116.1",
+    "loguru>=0.7.3",
+    "numpy>=2.3.3",
+    "pillow>=11.3.0",
+    "uvicorn>=0.23.1",
+]
