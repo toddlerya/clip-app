@@ -12,6 +12,7 @@ from fastapi.responses import JSONResponse
 from jina import Document, DocumentArray
 from loguru import logger
 from PIL import Image
+from sklearn.metrics.pairwise import cosine_similarity
 
 # 初始化FastAPI应用
 app = FastAPI(title="本地CLIP + 图像检索服务")
@@ -154,7 +155,8 @@ async def search_images(text: str, top_k: int = 5):
         da = DocumentArray([Document(text=text)])
         clip_client.encode(da, show_progress=False)
         text_embedding = da[0].embedding
-
+        # 最多返回有效数据条数
+        # top_k = min(top_k, len(vector_db.metadata))
         results = vector_db.search_similar(text_embedding, top_k)
 
         return {"status": "success", "count": len(results), "results": results}

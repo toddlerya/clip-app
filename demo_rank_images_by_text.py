@@ -39,7 +39,7 @@ if __name__ == "__main__":
     image_paths = [
         "test_pictures/绯村剑心.jpg",
         "test_pictures/演播室.png",
-        "test_pictures/apple.jpg",
+        "test_pictures/apple.jpeg",
     ]
 
     # 执行排序
