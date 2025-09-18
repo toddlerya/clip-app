@@ -1,0 +1,590 @@
+# requirements.txt
+"""
+fastapi==0.104.1
+uvicorn==0.24.0
+jina==3.20.1
+clip-server==0.8.7
+qdrant-client==1.6.4
+pillow==10.1.0
+numpy==1.24.3
+python-multipart==0.0.6
+"""
+
+import base64
+import hashlib
+import os
+import uuid
+from io import BytesIO
+from typing import Any, Dict, List, Optional
+
+import numpy as np
+import uvicorn
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi.responses import JSONResponse
+from jina import Client, Document, DocumentArray
+from PIL import Image
+from pydantic import BaseModel
+from qdrant_client import QdrantClient
+from qdrant_client.models import (
+    Distance,
+    FieldCondition,
+    Filter,
+    MatchValue,
+    PointStruct,
+    VectorParams,
+)
+
+
+# Pydantic模型定义
+class ImageUploadResponse(BaseModel):
+    success: bool
+    message: str
+    image_id: str
+    vector_id: Optional[str] = None
+
+
+class SearchRequest(BaseModel):
+    query_text: str
+    top_k: int = 10
+    filter_tags: Optional[List[str]] = None
+
+
+class SearchResponse(BaseModel):
+    success: bool
+    results: List[Dict[str, Any]]
+    total_count: int
+
+
+class TaggingRequest(BaseModel):
+    image_data: str  # base64编码的图片
+    candidate_tags: Optional[List[str]] = None
+    threshold: float = 0.5
+
+
+class TaggingResponse(BaseModel):
+    success: bool
+    tags: List[Dict[str, float]]  # {"tag": "cat", "score": 0.95}
+
+
+class CLIPQdrantService:
+    def __init__(
+        self,
+        clip_server_host: str = "localhost",
+        clip_server_port: int = 61000,
+        qdrant_host: str = "localhost",
+        qdrant_port: int = 6333,
+        collection_name: str = "clip_images",
+    ):
+        """
+        初始化CLIP-Qdrant服务
+
+        Args:
+            clip_server_host: CLIP服务器主机
+            clip_server_port: CLIP服务器端口
+            qdrant_host: Qdrant主机
+            qdrant_port: Qdrant端口
+            collection_name: 向量数据库集合名称
+        """
+        self.clip_client = Client(
+            host=clip_server_host, port=clip_server_port, protocol="grpc"
+        )
+        self.qdrant_client = QdrantClient(host=qdrant_host, port=qdrant_port)
+        self.collection_name = collection_name
+
+        # 初始化集合
+        self._init_collection()
+
+        # 预定义的标签库（可根据需要扩展）
+        self.common_tags = [
+            "person",
+            "people",
+            "man",
+            "woman",
+            "child",
+            "baby",
+            "car",
+            "truck",
+            "bus",
+            "motorcycle",
+            "bicycle",
+            "dog",
+            "cat",
+            "bird",
+            "horse",
+            "cow",
+            "sheep",
+            "tree",
+            "flower",
+            "grass",
+            "mountain",
+            "water",
+            "sky",
+            "building",
+            "house",
+            "road",
+            "bridge",
+            "food",
+            "fruit",
+            "vegetable",
+            "drink",
+            "computer",
+            "phone",
+            "book",
+            "chair",
+            "table",
+            "indoor",
+            "outdoor",
+            "nature",
+            "city",
+            "beach",
+            "forest",
+        ]
+
+    def _init_collection(self):
+        """初始化Qdrant集合"""
+        try:
+            # 检查集合是否存在
+            collections = self.qdrant_client.get_collections()
+            collection_exists = any(
+                c.name == self.collection_name for c in collections.collections
+            )
+
+            if not collection_exists:
+                # 创建集合，CLIP ViT-B/32的向量维度是512
+                self.qdrant_client.create_collection(
+                    collection_name=self.collection_name,
+                    vectors_config=VectorParams(size=512, distance=Distance.COSINE),
+                )
+                print(f"Created collection: {self.collection_name}")
+            else:
+                print(f"Collection {self.collection_name} already exists")
+
+        except Exception as e:
+            raise RuntimeError(f"Failed to initialize Qdrant collection: {str(e)}")
+
+    def encode_image(self, image_data: bytes) -> np.ndarray:
+        """使用CLIP编码图片"""
+        try:
+            # 创建Document
+            doc = Document(blob=image_data)
+            doc_array = DocumentArray([doc])
+
+            # 尝试不同的调用方式
+            encoded_docs = None
+
+            # 方法1: 直接调用
+            try:
+                encoded_docs = self.clip_client.post(on="/encode", inputs=doc_array)
+            except Exception as e1:
+                print(f"Method 1 failed: {e1}")
+
+                # 方法2: 使用空parameters
+                try:
+                    encoded_docs = self.clip_client.post(
+                        on="/encode", inputs=doc_array, parameters={}
+                    )
+                except Exception as e2:
+                    print(f"Method 2 failed: {e2}")
+
+                    # 方法3: 使用return_embeddings参数
+                    try:
+                        encoded_docs = self.clip_client.post(
+                            on="/encode", inputs=doc_array, return_embeddings=True
+                        )
+                    except Exception as e3:
+                        print(f"Method 3 failed: {e3}")
+                        raise RuntimeError(
+                            f"All encoding methods failed. Last error: {e3}"
+                        )
+
+            # 提取向量
+            if (
+                encoded_docs
+                and len(encoded_docs) > 0
+                and encoded_docs[0].embedding is not None
+            ):
+                return encoded_docs[0].embedding
+            else:
+                raise ValueError("Failed to encode image - no embedding returned")
+
+        except Exception as e:
+            raise RuntimeError(f"Image encoding failed: {str(e)}")
+
+    def encode_text(self, text: str) -> np.ndarray:
+        """使用CLIP编码文本"""
+        try:
+            # 创建Document
+            doc = Document(text=text)
+            doc_array = DocumentArray([doc])
+
+            # 尝试不同的调用方式
+            encoded_docs = None
+
+            # 方法1: 直接调用
+            try:
+                encoded_docs = self.clip_client.post(on="/encode", inputs=doc_array)
+            except Exception as e1:
+                print(f"Method 1 failed: {e1}")
+
+                # 方法2: 使用空parameters
+                try:
+                    encoded_docs = self.clip_client.post(
+                        on="/encode", inputs=doc_array, parameters={}
+                    )
+                except Exception as e2:
+                    print(f"Method 2 failed: {e2}")
+
+                    # 方法3: 使用return_embeddings参数
+                    try:
+                        encoded_docs = self.clip_client.post(
+                            on="/encode", inputs=doc_array, return_embeddings=True
+                        )
+                    except Exception as e3:
+                        print(f"Method 3 failed: {e3}")
+                        raise RuntimeError(
+                            f"All encoding methods failed. Last error: {e3}"
+                        )
+
+            # 提取向量
+            if (
+                encoded_docs
+                and len(encoded_docs) > 0
+                and encoded_docs[0].embedding is not None
+            ):
+                return encoded_docs[0].embedding
+            else:
+                raise ValueError("Failed to encode text - no embedding returned")
+
+        except Exception as e:
+            raise RuntimeError(f"Text encoding failed: {str(e)}")
+
+    def add_image(
+        self,
+        image_data: bytes,
+        tags: Optional[List[str]] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """将图片添加到向量数据库"""
+        try:
+            # 生成图片ID
+            image_hash = hashlib.md5(image_data).hexdigest()
+            image_id = f"img_{image_hash}"
+
+            # 编码图片
+            embedding = self.encode_image(image_data)
+
+            # 准备payload
+            payload = {
+                "image_id": image_id,
+                "tags": tags or [],
+                "metadata": metadata or {},
+            }
+
+            # 创建Point并插入Qdrant
+            point = PointStruct(
+                id=str(uuid.uuid4()), vector=embedding.tolist(), payload=payload
+            )
+
+            self.qdrant_client.upsert(
+                collection_name=self.collection_name, points=[point]
+            )
+
+            return image_id
+
+        except Exception as e:
+            raise RuntimeError(f"Failed to add image: {str(e)}")
+
+    def search_by_text(
+        self, query_text: str, top_k: int = 10, filter_tags: Optional[List[str]] = None
+    ) -> List[Dict[str, Any]]:
+        """根据文本搜索相似图片"""
+        try:
+            # 编码查询文本
+            query_vector = self.encode_text(query_text)
+
+            # 构建过滤条件
+            query_filter = None
+            if filter_tags:
+                query_filter = Filter(
+                    must=[
+                        FieldCondition(key="tags", match=MatchValue(value=tag))
+                        for tag in filter_tags
+                    ]
+                )
+
+            # 搜索
+            search_results = self.qdrant_client.search(
+                collection_name=self.collection_name,
+                query_vector=query_vector.tolist(),
+                query_filter=query_filter,
+                limit=top_k,
+                with_payload=True,
+            )
+
+            # 格式化结果
+            results = []
+            for result in search_results:
+                results.append(
+                    {
+                        "vector_id": result.id,
+                        "image_id": result.payload.get("image_id"),
+                        "score": result.score,
+                        "tags": result.payload.get("tags", []),
+                        "metadata": result.payload.get("metadata", {}),
+                    }
+                )
+
+            return results
+
+        except Exception as e:
+            raise RuntimeError(f"Search failed: {str(e)}")
+
+    def generate_tags(
+        self,
+        image_data: bytes,
+        candidate_tags: Optional[List[str]] = None,
+        threshold: float = 0.5,
+    ) -> List[Dict[str, float]]:
+        """为图片生成智能标签"""
+        try:
+            # 编码图片
+            image_embedding = self.encode_image(image_data)
+
+            # 使用候选标签或默认标签库
+            tags_to_check = candidate_tags or self.common_tags
+
+            # 计算图片与每个标签的相似度
+            tag_scores = []
+
+            for tag in tags_to_check:
+                # 编码标签文本
+                tag_embedding = self.encode_text(tag)
+
+                # 计算余弦相似度
+                similarity = np.dot(image_embedding, tag_embedding) / (
+                    np.linalg.norm(image_embedding) * np.linalg.norm(tag_embedding)
+                )
+
+                # 只保留超过阈值的标签
+                if similarity > threshold:
+                    tag_scores.append({"tag": tag, "score": float(similarity)})
+
+            # 按分数排序
+            tag_scores.sort(key=lambda x: x["score"], reverse=True)
+
+            return tag_scores
+
+        except Exception as e:
+            raise RuntimeError(f"Tag generation failed: {str(e)}")
+
+
+# 初始化服务
+app = FastAPI(
+    title="CLIP-Qdrant Image Service",
+    description="基于CLIP和Qdrant的图像语义搜索服务",
+    version="1.0.0",
+)
+
+# 初始化服务实例
+try:
+    service = CLIPQdrantService()
+except Exception as e:
+    print(f"Failed to initialize service: {e}")
+    service = None
+
+
+@app.get("/")
+async def root():
+    """健康检查接口"""
+    return {"message": "CLIP-Qdrant Service is running"}
+
+
+@app.post("/api/v1/images/upload", response_model=ImageUploadResponse)
+async def upload_image(
+    file: UploadFile = File(...),
+    tags: Optional[str] = Form(None),  # JSON字符串格式的标签列表
+):
+    """
+    上传图片到向量数据库
+
+    Args:
+        file: 上传的图片文件
+        tags: 可选的标签列表（JSON字符串格式，如 '["cat", "animal"]'）
+    """
+    if service is None:
+        raise HTTPException(status_code=500, detail="Service not initialized")
+
+    try:
+        # 验证文件类型
+        if not file.content_type.startswith("image/"):
+            raise HTTPException(status_code=400, detail="File must be an image")
+
+        # 读取图片数据
+        image_data = await file.read()
+
+        # 解析标签
+        tag_list = None
+        if tags:
+            import json
+
+            try:
+                tag_list = json.loads(tags)
+            except json.JSONDecodeError:
+                # 如果不是JSON格式，当作逗号分隔的字符串处理
+                tag_list = [t.strip() for t in tags.split(",") if t.strip()]
+
+        # 添加图片
+        image_id = service.add_image(image_data, tag_list)
+
+        return ImageUploadResponse(
+            success=True, message="Image uploaded successfully", image_id=image_id
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/v1/search/text", response_model=SearchResponse)
+async def search_by_text(request: SearchRequest):
+    """
+    根据文本查询搜索相似图片
+
+    Args:
+        request: 搜索请求，包含查询文本、返回数量等
+    """
+    if service is None:
+        raise HTTPException(status_code=500, detail="Service not initialized")
+
+    try:
+        results = service.search_by_text(
+            query_text=request.query_text,
+            top_k=request.top_k,
+            filter_tags=request.filter_tags,
+        )
+
+        return SearchResponse(success=True, results=results, total_count=len(results))
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/v1/search/tags")
+async def search_by_tags(tags: List[str], top_k: int = 10):
+    """
+    根据标签搜索图片
+
+    Args:
+        tags: 标签列表
+        top_k: 返回结果数量
+    """
+    if service is None:
+        raise HTTPException(status_code=500, detail="Service not initialized")
+
+    try:
+        # 将标签组合成查询文本
+        query_text = " ".join(tags)
+
+        results = service.search_by_text(
+            query_text=query_text, top_k=top_k, filter_tags=tags
+        )
+
+        return SearchResponse(success=True, results=results, total_count=len(results))
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/v1/images/tagging", response_model=TaggingResponse)
+async def auto_tagging(request: TaggingRequest):
+    """
+    图片智能打标签
+
+    Args:
+        request: 包含base64编码图片和可选候选标签的请求
+    """
+    if service is None:
+        raise HTTPException(status_code=500, detail="Service not initialized")
+
+    try:
+        # 解码base64图片
+        try:
+            image_data = base64.b64decode(request.image_data)
+        except Exception:
+            raise HTTPException(status_code=400, detail="Invalid base64 image data")
+
+        # 验证是否为有效图片
+        try:
+            Image.open(BytesIO(image_data))
+        except Exception:
+            raise HTTPException(status_code=400, detail="Invalid image format")
+
+        # 生成标签
+        tags = service.generate_tags(
+            image_data=image_data,
+            candidate_tags=request.candidate_tags,
+            threshold=request.threshold,
+        )
+
+        return TaggingResponse(success=True, tags=tags)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/v1/images/upload_and_tag")
+async def upload_and_tag(
+    file: UploadFile = File(...),
+    auto_tag: bool = Form(True),
+    tag_threshold: float = Form(0.5),
+):
+    """
+    上传图片并自动打标签
+
+    Args:
+        file: 上传的图片文件
+        auto_tag: 是否自动生成标签
+        tag_threshold: 标签生成阈值
+    """
+    if service is None:
+        raise HTTPException(status_code=500, detail="Service not initialized")
+
+    try:
+        # 验证文件类型
+        if not file.content_type.startswith("image/"):
+            raise HTTPException(status_code=400, detail="File must be an image")
+
+        # 读取图片数据
+        image_data = await file.read()
+
+        # 自动生成标签（如果启用）
+        generated_tags = []
+        if auto_tag:
+            tag_results = service.generate_tags(image_data, threshold=tag_threshold)
+            generated_tags = [tag["tag"] for tag in tag_results]
+
+        # 添加图片到数据库
+        image_id = service.add_image(image_data, generated_tags)
+
+        return {
+            "success": True,
+            "message": "Image uploaded and tagged successfully",
+            "image_id": image_id,
+            "generated_tags": generated_tags,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+if __name__ == "__main__":
+    print("Starting CLIP-Qdrant Service...")
+    print("Make sure your CLIP server is running on localhost:61000")
+    print("Make sure your Qdrant server is running on localhost:6333")
+
+    uvicorn.run("clip_qdrant_server_claude:app", host="0.0.0.0", port=8000, reload=True)
