@@ -784,6 +784,8 @@ async def upload_and_tag(
             "message": "Image uploaded and tagged successfully",
             "image_id": image_id,
             "generated_tags": generated_tags,
+            "tag_threshold": tag_threshold,
+            "tag_message": tag_message,
             "tag_results": tag_results,
             "metadata": metadata_dict,  
         }
