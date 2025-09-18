@@ -7,7 +7,8 @@ executors:
     uses:
       jtype: CLIPEncoder
       with:
-        model_name: ViT-B/32
+        name: CN-CLIP/ViT-B-16
+        # name: ViT-B/32
         device: cpu
       metas:
         py_modules:
@@ -19,7 +20,6 @@ executors:
       with:
         n_dim: 512
         limit: 10
-        sync_bulk: True # 强制同步写入（关键修复）
       metas:
         py_modules:
           - annlite.executor

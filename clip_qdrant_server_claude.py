@@ -19,8 +19,9 @@ from typing import Any, Dict, List, Optional
 
 import numpy as np
 import uvicorn
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile, Depends
 from fastapi.responses import JSONResponse
+from fastapi.encoders import jsonable_encoder
 from jina import Client, Document, DocumentArray
 from PIL import Image
 from pydantic import BaseModel
@@ -33,6 +34,7 @@ from qdrant_client.models import (
     PointStruct,
     VectorParams,
 )
+from loguru import logger
 
 
 # Pydantic模型定义
@@ -49,10 +51,27 @@ class SearchRequest(BaseModel):
     filter_tags: Optional[List[str]] = None
 
 
+class TagList(BaseModel):
+    tags: List[str] = []
+
+
+class ImageMetadata(BaseModel):
+    filename: Optional[str] = None
+    author: Optional[str] = None
+    description: Optional[str] = None
+    # 可以添加更多元数据字段
+
+
 class SearchResponse(BaseModel):
     success: bool
     results: List[Dict[str, Any]]
     total_count: int
+    
+class ImageListResponse(BaseModel):
+    success: bool
+    message: str
+    images: List[Dict[str, Any]]
+    total: int
 
 
 class TaggingRequest(BaseModel):
@@ -150,14 +169,14 @@ class CLIPQdrantService:
             )
 
             if not collection_exists:
-                # 创建集合，CLIP ViT-B/32的向量维度是512
+                # 创建集合，CLIP ViT-B/32 和 CN-CLIP/ViT-B-16的向量维度是512
                 self.qdrant_client.create_collection(
                     collection_name=self.collection_name,
                     vectors_config=VectorParams(size=512, distance=Distance.COSINE),
                 )
-                print(f"Created collection: {self.collection_name}")
+                logger.info(f"Created collection: {self.collection_name}")
             else:
-                print(f"Collection {self.collection_name} already exists")
+                logger.info(f"Collection {self.collection_name} already exists")
 
         except Exception as e:
             raise RuntimeError(f"Failed to initialize Qdrant collection: {str(e)}")
@@ -176,7 +195,7 @@ class CLIPQdrantService:
             try:
                 encoded_docs = self.clip_client.post(on="/encode", inputs=doc_array)
             except Exception as e1:
-                print(f"Method 1 failed: {e1}")
+                logger.info(f"Method 1 failed: {e1}")
 
                 # 方法2: 使用空parameters
                 try:
@@ -184,7 +203,7 @@ class CLIPQdrantService:
                         on="/encode", inputs=doc_array, parameters={}
                     )
                 except Exception as e2:
-                    print(f"Method 2 failed: {e2}")
+                    logger.info(f"Method 2 failed: {e2}")
 
                     # 方法3: 使用return_embeddings参数
                     try:
@@ -192,7 +211,7 @@ class CLIPQdrantService:
                             on="/encode", inputs=doc_array, return_embeddings=True
                         )
                     except Exception as e3:
-                        print(f"Method 3 failed: {e3}")
+                        logger.info(f"Method 3 failed: {e3}")
                         raise RuntimeError(
                             f"All encoding methods failed. Last error: {e3}"
                         )
@@ -224,7 +243,7 @@ class CLIPQdrantService:
             try:
                 encoded_docs = self.clip_client.post(on="/encode", inputs=doc_array)
             except Exception as e1:
-                print(f"Method 1 failed: {e1}")
+                logger.info(f"Method 1 failed: {e1}")
 
                 # 方法2: 使用空parameters
                 try:
@@ -232,7 +251,7 @@ class CLIPQdrantService:
                         on="/encode", inputs=doc_array, parameters={}
                     )
                 except Exception as e2:
-                    print(f"Method 2 failed: {e2}")
+                    logger.info(f"Method 2 failed: {e2}")
 
                     # 方法3: 使用return_embeddings参数
                     try:
@@ -240,7 +259,7 @@ class CLIPQdrantService:
                             on="/encode", inputs=doc_array, return_embeddings=True
                         )
                     except Exception as e3:
-                        print(f"Method 3 failed: {e3}")
+                        logger.info(f"Method 3 failed: {e3}")
                         raise RuntimeError(
                             f"All encoding methods failed. Last error: {e3}"
                         )
@@ -294,6 +313,32 @@ class CLIPQdrantService:
         except Exception as e:
             raise RuntimeError(f"Failed to add image: {str(e)}")
 
+    def get_all_images(self) -> List[Dict[str, Any]]:
+        """获取所有已入库的图片信息"""
+        try:
+            # 获取所有点
+            scroll_result = self.qdrant_client.scroll(
+                collection_name=self.collection_name,
+                limit=1000,  # 设置一个合理的限制
+            )
+            
+            # 处理结果
+            results = []
+            for point in scroll_result[0]:
+                payload = point.payload
+                results.append(
+                    {
+                        "image_id": payload.get("image_id", "unknown"),
+                        "tags": payload.get("tags", []),
+                        "metadata": payload.get("metadata", {}),
+                        "vector_id": point.id,
+                    }
+                )
+            
+            return results
+        except Exception as e:
+            raise RuntimeError(f"Failed to get all images: {str(e)}")
+
     def search_by_text(
         self, query_text: str, top_k: int = 10, filter_tags: Optional[List[str]] = None
     ) -> List[Dict[str, Any]]:
@@ -344,38 +389,81 @@ class CLIPQdrantService:
         image_data: bytes,
         candidate_tags: Optional[List[str]] = None,
         threshold: float = 0.5,
-    ) -> List[Dict[str, float]]:
+    ) -> tuple[str,List[Dict[str, float]]]:
         """为图片生成智能标签"""
+        message = "success"
         try:
             # 编码图片
             image_embedding = self.encode_image(image_data)
 
             # 使用候选标签或默认标签库
             tags_to_check = candidate_tags or self.common_tags
+            
+            # 确保有标签可用
+            if not tags_to_check or len(tags_to_check) == 0:
+                # 如果没有标签可用，使用一些基本标签
+                tags_to_check = [
+                    "person", "animal", "cat", "dog", "bird", "building", 
+                    "nature", "food", "vehicle", "indoor", "outdoor"
+                ]
+                logger.warning(f"没有找到标签库，使用默认标签: {tags_to_check}")
 
             # 计算图片与每个标签的相似度
             tag_scores = []
 
             for tag in tags_to_check:
-                # 编码标签文本
-                tag_embedding = self.encode_text(tag)
+                try:
+                    # 编码标签文本
+                    tag_embedding = self.encode_text(tag)
 
-                # 计算余弦相似度
-                similarity = np.dot(image_embedding, tag_embedding) / (
-                    np.linalg.norm(image_embedding) * np.linalg.norm(tag_embedding)
-                )
+                    # 计算余弦相似度
+                    similarity = np.dot(image_embedding, tag_embedding) / (
+                        np.linalg.norm(image_embedding) * np.linalg.norm(tag_embedding)
+                    )
 
-                # 只保留超过阈值的标签
-                if similarity > threshold:
-                    tag_scores.append({"tag": tag, "score": float(similarity)})
+                    # 降低阈值以确保能生成一些标签
+                    # actual_threshold = min(threshold, 0.3)  # 确保阈值不高于0.3
+                    
+                    # 只保留超过阈值的标签
+                    if similarity > threshold:
+                        tag_scores.append({"tag": tag, "score": float(similarity)})
+                        logger.debug(f"标签 '{tag}' 相似度: {similarity:.4f} - 已添加")
+                    else:
+                        logger.debug(f"标签 '{tag}' 相似度: {similarity:.4f} - 低于阈值")
+                except Exception as tag_error:
+                    logger.error(f"处理标签 '{tag}' 时出错: {str(tag_error)}")
+                    continue
 
             # 按分数排序
             tag_scores.sort(key=lambda x: x["score"], reverse=True)
+            
+            # 如果没有标签超过阈值，返回前3个最相似的标签
+            if not tag_scores and tags_to_check:
+                message = "没有标签超过阈值, 返回前3个最相似的标签"
+                logger.warning(message)
+                all_scores = []
+                for tag in tags_to_check:
+                    try:
+                        tag_embedding = self.encode_text(tag)
+                        similarity = np.dot(image_embedding, tag_embedding) / (
+                            np.linalg.norm(image_embedding) * np.linalg.norm(tag_embedding)
+                        )
+                        all_scores.append({"tag": tag, "score": float(similarity)})
+                    except Exception:
+                        continue
+                
+                all_scores.sort(key=lambda x: x["score"], reverse=True)
+                tag_scores = all_scores[:3]  # 返回前3个最相似的标签
+                logger.info(f"返回的前3个标签: {tag_scores}")
 
-            return tag_scores
+            return message, tag_scores
 
         except Exception as e:
-            raise RuntimeError(f"Tag generation failed: {str(e)}")
+            message = f"标签生成失败: {str(e)}"
+            logger.error(message)
+
+            # 返回空列表而不是抛出异常，确保上传流程可以继续
+            return message, []
 
 
 # 初始化服务
@@ -389,7 +477,7 @@ app = FastAPI(
 try:
     service = CLIPQdrantService()
 except Exception as e:
-    print(f"Failed to initialize service: {e}")
+    logger.info(f"Failed to initialize service: {e}")
     service = None
 
 
@@ -402,7 +490,8 @@ async def root():
 @app.post("/api/v1/images/upload", response_model=ImageUploadResponse)
 async def upload_image(
     file: UploadFile = File(...),
-    tags: Optional[str] = Form(None),  # JSON字符串格式的标签列表
+    tags: str = Form(None),  # 仍然接收表单数据
+    metadata: str = Form(None),  # 仍然接收表单数据
 ):
     """
     上传图片到向量数据库
@@ -410,6 +499,13 @@ async def upload_image(
     Args:
         file: 上传的图片文件
         tags: 可选的标签列表（JSON字符串格式，如 '["cat", "animal"]'）
+        metadata: 可选的元数据（JSON字符串格式，如 '{"filename": "cat.jpg", "author": "user1"}'）
+        
+    注意:
+        系统会自动添加以下元数据字段:
+        - file_name: 原始文件名
+        - file_size: 文件大小(字节)
+        - md5: 图片内容的MD5哈希值
     """
     if service is None:
         raise HTTPException(status_code=500, detail="Service not initialized")
@@ -429,12 +525,51 @@ async def upload_image(
 
             try:
                 tag_list = json.loads(tags)
+                # 确保tag_list是列表类型
+                if not isinstance(tag_list, list):
+                    tag_list = [str(tag_list)]
             except json.JSONDecodeError:
                 # 如果不是JSON格式，当作逗号分隔的字符串处理
                 tag_list = [t.strip() for t in tags.split(",") if t.strip()]
+                
+        # 解析元数据
+        metadata_dict = None
+        if metadata:
+            import json
+            
+            try:
+                metadata_dict = json.loads(metadata)
+                # 确保metadata_dict是字典类型
+                if not isinstance(metadata_dict, dict):
+                    metadata_dict = {"value": str(metadata_dict)}
+            except json.JSONDecodeError:
+                raise HTTPException(status_code=400, detail="Metadata must be a valid JSON object")
+                
+        # 如果没有提供元数据，初始化为空字典
+        if metadata_dict is None:
+            metadata_dict = {}
+            
+        # 始终添加文件名到元数据中
+        metadata_dict["file_name"] = file.filename
+        
+        # 添加文件大小到元数据中
+        try:
+            # 获取文件大小（以字节为单位）
+            file_size = len(image_data)
+            metadata_dict["file_size"] = file_size
+        except Exception as e:
+            logger.info(f"无法获取文件大小: {e}")
+            
+        # 计算并添加图片的MD5值
+        try:
+            import hashlib
+            md5_hash = hashlib.md5(image_data).hexdigest()
+            metadata_dict["md5"] = md5_hash
+        except Exception as e:
+            logger.info(f"无法计算MD5值: {e}")
 
         # 添加图片
-        image_id = service.add_image(image_data, tag_list)
+        image_id = service.add_image(image_data, tag_list, metadata_dict)
 
         return ImageUploadResponse(
             success=True, message="Image uploaded successfully", image_id=image_id
@@ -445,6 +580,26 @@ async def upload_image(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
+@app.get("/api/v1/images", response_model=ImageListResponse)
+async def list_images():
+    """
+    获取所有已入库的图片信息，包括向量ID、标签和元数据
+    """
+    if service is None:
+        raise HTTPException(status_code=500, detail="Service not initialized")
+
+    try:
+        images = service.get_all_images()
+        
+        return ImageListResponse(
+            success=True,
+            message="Images retrieved successfully",
+            images=images,
+            total=len(images),
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/v1/search/text", response_model=SearchResponse)
 async def search_by_text(request: SearchRequest):
@@ -540,6 +695,7 @@ async def upload_and_tag(
     file: UploadFile = File(...),
     auto_tag: bool = Form(True),
     tag_threshold: float = Form(0.5),
+    metadata: str = Form(None),  # 添加元数据参数
 ):
     """
     上传图片并自动打标签
@@ -548,6 +704,13 @@ async def upload_and_tag(
         file: 上传的图片文件
         auto_tag: 是否自动生成标签
         tag_threshold: 标签生成阈值
+        metadata: 可选的元数据（JSON字符串格式，如 '{"filename": "cat.jpg", "author": "user1"}'）
+        
+    注意:
+        系统会自动添加以下元数据字段:
+        - file_name: 原始文件名
+        - file_size: 文件大小(字节)
+        - md5: 图片内容的MD5哈希值
     """
     if service is None:
         raise HTTPException(status_code=500, detail="Service not initialized")
@@ -563,17 +726,66 @@ async def upload_and_tag(
         # 自动生成标签（如果启用）
         generated_tags = []
         if auto_tag:
-            tag_results = service.generate_tags(image_data, threshold=tag_threshold)
-            generated_tags = [tag["tag"] for tag in tag_results]
+            try:
+                logger.info(f"开始生成标签，阈值: {tag_threshold}")
+                tag_message, tag_results = service.generate_tags(image_data, threshold=tag_threshold)
+                logger.info(f"标签生成消息: {tag_message}")
+                if tag_results:
+                    generated_tags = [tag["tag"] for tag in tag_results]
+                    logger.info(f"提取的标签: {generated_tags}")
+                else:
+                    logger.warning(f"没有生成任何标签: {tag_message}")
+            except Exception as e:
+                logger.error(f"标签生成过程中出错: {str(e)}")
+                # 即使标签生成失败，也继续上传图片
+            
+        # 解析元数据
+        metadata_dict = None
+        if metadata:
+            import json
+            logger.info(f"上传图片，元数据: {metadata}")
+            
+            try:
+                metadata_dict = json.loads(metadata)
+                # 确保metadata_dict是字典类型
+                if not isinstance(metadata_dict, dict):
+                    metadata_dict = {"value": str(metadata_dict)}
+            except json.JSONDecodeError:
+                raise HTTPException(status_code=400, detail="Metadata must be a valid JSON object")
+                
+        # 如果没有提供元数据，初始化为空字典
+        if metadata_dict is None:
+            metadata_dict = {}
+            
+        # 始终添加文件名到元数据中
+        metadata_dict["file_name"] = file.filename
+        
+        # 添加文件大小到元数据中
+        try:
+            # 获取文件大小（以字节为单位）
+            file_size = len(image_data)
+            metadata_dict["file_size"] = file_size
+        except Exception as e:
+            logger.info(f"无法获取文件大小: {e}")
+            
+        # 计算并添加图片的MD5值
+        try:
+            import hashlib
+            md5_hash = hashlib.md5(image_data).hexdigest()
+            metadata_dict["md5"] = md5_hash
+        except Exception as e:
+            logger.info(f"无法计算MD5值: {e}")
 
         # 添加图片到数据库
-        image_id = service.add_image(image_data, generated_tags)
+        image_id = service.add_image(image_data, generated_tags, metadata_dict)
 
         return {
             "success": True,
             "message": "Image uploaded and tagged successfully",
             "image_id": image_id,
             "generated_tags": generated_tags,
+            "tag_results": tag_results,
+            "metadata": metadata_dict,  
         }
 
     except HTTPException:
@@ -583,8 +795,8 @@ async def upload_and_tag(
 
 
 if __name__ == "__main__":
-    print("Starting CLIP-Qdrant Service...")
-    print("Make sure your CLIP server is running on localhost:61000")
-    print("Make sure your Qdrant server is running on localhost:6333")
+    logger.info("Starting CLIP-Qdrant Service...")
+    logger.info("Make sure your CLIP server is running on localhost:61000")
+    logger.info("Make sure your Qdrant server is running on localhost:6333")
 
     uvicorn.run("clip_qdrant_server_claude:app", host="0.0.0.0", port=8000, reload=True)
