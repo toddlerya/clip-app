@@ -37,6 +37,99 @@ from qdrant_client.models import (
 from loguru import logger
 
 
+# 工具函数类
+class FileUtils:
+    """文件处理工具类"""
+    
+    @staticmethod
+    def calculate_md5(data: bytes) -> str:
+        """
+        计算数据的MD5哈希值
+        
+        Args:
+            data: 字节数据
+            
+        Returns:
+            MD5哈希字符串
+        """
+        try:
+            return hashlib.md5(data).hexdigest()
+        except Exception as e:
+            logger.error(f"计算MD5值失败: {e}")
+            raise RuntimeError(f"Failed to calculate MD5: {str(e)}")
+    
+    @staticmethod
+    def get_file_size(data: bytes) -> int:
+        """
+        获取文件大小（字节）
+        
+        Args:
+            data: 字节数据
+            
+        Returns:
+            文件大小（字节）
+        """
+        try:
+            return len(data)
+        except Exception as e:
+            logger.error(f"获取文件大小失败: {e}")
+            raise RuntimeError(f"Failed to get file size: {str(e)}")
+    
+    @staticmethod
+    def generate_image_id(image_data: bytes) -> str:
+        """
+        基于图片数据生成唯一ID
+        
+        Args:
+            image_data: 图片字节数据
+            
+        Returns:
+            图片ID字符串
+        """
+        try:
+            image_hash = FileUtils.calculate_md5(image_data)
+            return f"img_{image_hash}"
+        except Exception as e:
+            logger.error(f"生成图片ID失败: {e}")
+            raise RuntimeError(f"Failed to generate image ID: {str(e)}")
+    
+    @staticmethod
+    def prepare_file_metadata(
+        image_data: bytes, 
+        filename: Optional[str] = None, 
+        custom_metadata: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """
+        准备文件元数据，包括文件名、大小、MD5等
+        
+        Args:
+            image_data: 图片字节数据
+            filename: 文件名
+            custom_metadata: 自定义元数据
+            
+        Returns:
+            完整的元数据字典
+        """
+        try:
+            metadata = custom_metadata.copy() if custom_metadata else {}
+            
+            # 添加文件名
+            if filename:
+                metadata["file_name"] = filename
+            
+            # 添加文件大小
+            metadata["file_size"] = FileUtils.get_file_size(image_data)
+            
+            # 添加MD5值
+            metadata["md5"] = FileUtils.calculate_md5(image_data)
+            
+            return metadata
+            
+        except Exception as e:
+            logger.error(f"准备文件元数据失败: {e}")
+            raise RuntimeError(f"Failed to prepare file metadata: {str(e)}")
+
+
 # Pydantic模型定义
 class ImageUploadResponse(BaseModel):
     success: bool
@@ -285,9 +378,8 @@ class CLIPQdrantService:
     ) -> str:
         """将图片添加到向量数据库"""
         try:
-            # 生成图片ID
-            image_hash = hashlib.md5(image_data).hexdigest()
-            image_id = f"img_{image_hash}"
+            # 使用工具类生成图片ID
+            image_id = FileUtils.generate_image_id(image_data)
 
             # 编码图片
             embedding = self.encode_image(image_data)
@@ -544,32 +636,16 @@ async def upload_image(
                     metadata_dict = {"value": str(metadata_dict)}
             except json.JSONDecodeError:
                 raise HTTPException(status_code=400, detail="Metadata must be a valid JSON object")
-                
-        # 如果没有提供元数据，初始化为空字典
-        if metadata_dict is None:
-            metadata_dict = {}
-            
-        # 始终添加文件名到元数据中
-        metadata_dict["file_name"] = file.filename
-        
-        # 添加文件大小到元数据中
-        try:
-            # 获取文件大小（以字节为单位）
-            file_size = len(image_data)
-            metadata_dict["file_size"] = file_size
-        except Exception as e:
-            logger.info(f"无法获取文件大小: {e}")
-            
-        # 计算并添加图片的MD5值
-        try:
-            import hashlib
-            md5_hash = hashlib.md5(image_data).hexdigest()
-            metadata_dict["md5"] = md5_hash
-        except Exception as e:
-            logger.info(f"无法计算MD5值: {e}")
+
+        # 使用工具类准备完整的文件元数据
+        complete_metadata = FileUtils.prepare_file_metadata(
+            image_data=image_data,
+            filename=file.filename,
+            custom_metadata=metadata_dict
+        )
 
         # 添加图片
-        image_id = service.add_image(image_data, tag_list, metadata_dict)
+        image_id = service.add_image(image_data, tag_list, complete_metadata)
 
         return ImageUploadResponse(
             success=True, message="Image uploaded successfully", image_id=image_id
@@ -676,7 +752,7 @@ async def auto_tagging(request: TaggingRequest):
             raise HTTPException(status_code=400, detail="Invalid image format")
 
         # 生成标签
-        tags = service.generate_tags(
+        message, tags = service.generate_tags(
             image_data=image_data,
             candidate_tags=request.candidate_tags,
             threshold=request.threshold,
@@ -725,6 +801,9 @@ async def upload_and_tag(
 
         # 自动生成标签（如果启用）
         generated_tags = []
+        tag_message = "success"
+        tag_results = []
+        
         if auto_tag:
             try:
                 logger.info(f"开始生成标签，阈值: {tag_threshold}")
@@ -752,32 +831,16 @@ async def upload_and_tag(
                     metadata_dict = {"value": str(metadata_dict)}
             except json.JSONDecodeError:
                 raise HTTPException(status_code=400, detail="Metadata must be a valid JSON object")
-                
-        # 如果没有提供元数据，初始化为空字典
-        if metadata_dict is None:
-            metadata_dict = {}
-            
-        # 始终添加文件名到元数据中
-        metadata_dict["file_name"] = file.filename
-        
-        # 添加文件大小到元数据中
-        try:
-            # 获取文件大小（以字节为单位）
-            file_size = len(image_data)
-            metadata_dict["file_size"] = file_size
-        except Exception as e:
-            logger.info(f"无法获取文件大小: {e}")
-            
-        # 计算并添加图片的MD5值
-        try:
-            import hashlib
-            md5_hash = hashlib.md5(image_data).hexdigest()
-            metadata_dict["md5"] = md5_hash
-        except Exception as e:
-            logger.info(f"无法计算MD5值: {e}")
+
+        # 使用工具类准备完整的文件元数据
+        complete_metadata = FileUtils.prepare_file_metadata(
+            image_data=image_data,
+            filename=file.filename,
+            custom_metadata=metadata_dict
+        )
 
         # 添加图片到数据库
-        image_id = service.add_image(image_data, generated_tags, metadata_dict)
+        image_id = service.add_image(image_data, generated_tags, complete_metadata)
 
         return {
             "success": True,
@@ -787,7 +850,7 @@ async def upload_and_tag(
             "tag_threshold": tag_threshold,
             "tag_message": tag_message,
             "tag_results": tag_results,
-            "metadata": metadata_dict,  
+            "metadata": complete_metadata,  
         }
 
     except HTTPException:
