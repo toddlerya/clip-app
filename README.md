@@ -26,7 +26,7 @@ chmod +x start_server.sh
 ```
 
 ### 启动qdrant服务端
-下载所需的安装包 https://github.com/qdrant/qdrant/releases 
+下载所需的安装包 https://github.com/qdrant/qdrant/releases
 比如 qdrant-x86_64-unknown-linux-musl.tar.gz
 解压
 ```shell
@@ -44,6 +44,7 @@ log_level: INFO
 http_port: 6333
 grpc_port: 6334
 service_port: 6335
+storage_path: /path/to/qdrant_data
 ```
 
 创建数据目录映射
@@ -53,11 +54,11 @@ mkdir -p qdrant/data
 
 启动qdrant服务端
 ```shell
-./qdrant --config-path qdrant/config/production.yaml                                
+./qdrant --config-path qdrant/config/production.yaml
 ```
 
 ### 启动FastAPI服务
 
 ```shell
 python clip_qdrant_server.py
-``` 
+```
