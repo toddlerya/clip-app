@@ -16,3 +16,5 @@ workspace
 qdrant/data
 qdrant/storage
 qdrant_data/data
+
+*.pt

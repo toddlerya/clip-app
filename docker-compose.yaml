@@ -32,7 +32,7 @@ services:
       - "61000:61000"
     volumes:
       - ./search_flow.yaml:/app/search_flow.yaml # 挂载配置文件
-      - ./clip-app:/app/clip-app # 可选：挂载代码目录
+      - ./clip_models/clip_cn_vit-b-16.pt:/app/clip_cn_vit-b-16.pt # 挂载模型文件
     environment:
       - JINA_LOG_LEVEL=DEBUG
     depends_on:
