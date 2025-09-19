@@ -1,11 +1,13 @@
 services:
   qdrant:
     image: qdrant/qdrant:latest
-    restart: always
+    restart: unless-stop
     container_name: qdrant
     ports:
       - 6333:6333
       - 6334:6334
+    networks:
+      - clip-qdrant-net
     expose:
       - 6333
       - 6334
@@ -18,11 +20,14 @@ services:
 
   # CLIP Server (支持CN-CLIP)
   clip-server:
+    image: clip-server:0.8.3_cn-clip1.6.0
     build:
       context: .
       dockerfile: Dockerfile.clip-server
-    restart: always
+    restart: unless-stop
     container_name: clip-server
+    networks:
+      - clip-qdrant-net
     ports:
       - "61000:61000"
     volumes:
@@ -35,11 +40,14 @@ services:
 
   # FastAPI服务
   fastapi:
+    image: clip-qdrant-api:1.0.0
     build:
       context: .
       dockerfile: Dockerfile.fastapi
-    restart: always
+    restart: unless-stop
     container_name: clip-fastapi
+    networks:
+      - clip-qdrant-net
     ports:
       - "8000:8000"
     volumes:
@@ -53,3 +61,11 @@ services:
     depends_on:
       - qdrant
       - clip-server
+
+networks:
+  clip-qdrant-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 132.132.0.0/16 # 随便挑一个没人用的段
+          gateway: 132.132.0.1

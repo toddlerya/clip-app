@@ -3,6 +3,11 @@ FROM python:3.11-slim
 # 设置工作目录
 WORKDIR /app
 
+# 安装系统依赖（包括patch和编译工具）
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends gcc patch build-essential python3-dev && \
+    rm -rf /var/lib/apt/lists/*
+
 # 设置pip国内源
 RUN pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple && \
     pip install --upgrade pip
