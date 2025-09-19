@@ -401,6 +401,7 @@ class CLIPQdrantService:
         image_data: bytes,
         tags: Optional[List[str]] = None,
         metadata: Optional[Dict[str, Any]] = None,
+        force_update: bool = False
     ) -> tuple[str, str]:
         """将图片添加到向量数据库"""
         message = "success"
@@ -410,6 +411,41 @@ class CLIPQdrantService:
 
             # 检查图片是否已存在
             if self.is_image_exist(image_id):
+                if force_update:
+                    # 查询现有向量ID
+                    existing_points = self.qdrant_client.scroll(
+                        collection_name=self.collection_name,
+                        scroll_filter=Filter(must=[FieldCondition(key="image_id", match=MatchValue(value=image_id))]),
+                        limit=1,
+                         # 强制返回向量数据
+                        with_vectors=True 
+                    )[0]
+                    if existing_points:
+                        # 更新payload
+                        existing_point = existing_points[0]
+                        # 确保向量存在
+                        if existing_point.vector is None:
+                            raise RuntimeError("Existing image has no vector data")
+                        # 更新payload（保留原向量）
+                        updated_payload = {
+                            "image_id": image_id,
+                            "tags": tags or existing_point.payload.get("tags", []),
+                            "metadata": metadata or existing_point.payload.get("metadata", {})
+                        }
+                        # 用原向量ID和向量值进行更新
+                        self.qdrant_client.upsert(
+                            collection_name=self.collection_name,
+                            points=[PointStruct(
+                                id=existing_point.id,
+                                # 关键：复用原向量
+                                vector=existing_point.vector,  
+                                payload=updated_payload
+                            )]
+                        )
+                        message = f"图片已更新: {image_id}"
+                        return message, image_id
+                    else:
+                        raise RuntimeError("Image exists check passed but no point found")
                 message = f"图片已存在: {image_id}"
                 logger.warning(message)
                 # 直接返回已存在的image_id，不重复插入
@@ -438,6 +474,25 @@ class CLIPQdrantService:
 
         except Exception as e:
             raise RuntimeError(f"Failed to add image: {str(e)}")
+
+
+    def delete_image(self, image_id: str) -> bool:
+        """删除指定image_id的图片数据"""
+        try:
+            filter_condition = Filter(
+                must=[FieldCondition(key="image_id", match=MatchValue(value=image_id))]
+            )
+            self.qdrant_client.delete(
+                collection_name=self.collection_name,
+                points_selector=filter_condition
+            )
+            return True
+        except Exception as e:
+            logger.error(f"删除图片失败: {e}")
+            return False
+
+# 新增API接口
+
 
     def get_all_images(self) -> List[Dict[str, Any]]:
         """获取所有已入库的图片信息"""
@@ -649,7 +704,8 @@ async def root():
 async def upload_image(
     file: UploadFile = File(...),
     tags: str = Form(None),  # 仍然接收表单数据
-    metadata: str = Form(None),  # 仍然接收表单数据
+    metadata: str = Form(None),  # 仍然接收表单数据,
+    force_update: bool = Form(False),
 ):
     """
     上传图片到向量数据库
@@ -658,6 +714,7 @@ async def upload_image(
         file: 上传的图片文件
         tags: 可选的标签列表（JSON字符串格式，如 '["cat", "animal"]'）
         metadata: 可选的元数据（JSON字符串格式，如 '{"filename": "cat.jpg", "author": "user1"}'）
+        force_update: 是否强制更新已存在的图片，默认False
 
     注意:
         系统会自动添加以下元数据字段:
@@ -711,7 +768,7 @@ async def upload_image(
         )
 
         # 添加图片
-        message, image_id = service.add_image(image_data, tag_list, complete_metadata)
+        message, image_id = service.add_image(image_data, tag_list, complete_metadata, force_update=force_update)
 
         return ImageUploadResponse(success=True, message=message, image_id=image_id)
 
@@ -741,6 +798,15 @@ async def list_images():
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.delete("/api/v1/images/{image_id}")
+async def delete_image(image_id: str):
+    if service is None:
+        raise HTTPException(status_code=500, detail="Service not initialized")
+    success = service.delete_image(image_id)
+    if success:
+        return {"success": success, "message": "删除成功"}
+    else:
+        raise HTTPException(status_code=500, detail="删除失败")
 
 @app.post("/api/v1/search/text", response_model=SearchResponse)
 async def search_by_text(request: SearchRequest):
@@ -844,6 +910,7 @@ async def upload_and_tag(
     auto_tag: bool = Form(True),
     tag_threshold: float = Form(0.5),
     metadata: str = Form(None),  # 添加元数据参数
+    force_update: bool = Form(False),  # 添加强制更新参数
 ):
     """
     上传图片并自动打标签
@@ -853,6 +920,7 @@ async def upload_and_tag(
         auto_tag: 是否自动生成标签
         tag_threshold: 标签生成阈值
         metadata: 可选的元数据（JSON字符串格式，如 '{"filename": "cat.jpg", "author": "user1"}'）
+        force_update: 是否强制更新已存在的图片，默认False   
 
     注意:
         系统会自动添加以下元数据字段:
@@ -916,7 +984,7 @@ async def upload_and_tag(
 
         # 添加图片到数据库
         message, image_id = service.add_image(
-            image_data, generated_tags, complete_metadata
+            image_data, generated_tags, complete_metadata, force_update=force_update
         )
 
         return {
