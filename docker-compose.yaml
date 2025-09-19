@@ -10,13 +10,46 @@ services:
       - 6333
       - 6334
       - 6335
-    configs:
-      - source: qdrant_config
-        target: /qdrant/config/production.yaml
     volumes:
-      - ./qdrant_data:/qdrant/storage
+      - ./qdrant/storage:/qdrant/storage
+      - ./qdrant/config:/qdrant/config
+    environment:
+      - QDRANT_CONFIG_PATH=/qdrant/config/production.yaml
 
-configs:
-  qdrant_config:
-    content: |
-      log_level: INFO
+  # CLIP Server (支持CN-CLIP)
+  clip-server:
+    build:
+      context: .
+      dockerfile: Dockerfile.clip-server
+    restart: always
+    container_name: clip-server
+    ports:
+      - "61000:61000"
+    volumes:
+      - ./search_flow.yaml:/app/search_flow.yaml # 挂载配置文件
+      - ./clip-app:/app/clip-app # 可选：挂载代码目录
+    environment:
+      - JINA_LOG_LEVEL=DEBUG
+    depends_on:
+      - qdrant
+
+  # FastAPI服务
+  fastapi:
+    build:
+      context: .
+      dockerfile: Dockerfile.fastapi
+    restart: always
+    container_name: clip-fastapi
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./clip_qdrant_server.py:/app/clip_qdrant_server.py # 挂载核心代码
+      - ./clip-app:/app/clip-app # 挂载整个项目目录
+    environment:
+      - QDRANT_HOST=qdrant # 容器内访问Qdrant的地址
+      - QDRANT_PORT=6333
+      - CLIP_SERVER_HOST=clip-server # 容器内访问CLIP Server的地址
+      - CLIP_SERVER_PORT=61000
+    depends_on:
+      - qdrant
+      - clip-server

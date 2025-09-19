@@ -8,6 +8,15 @@
 3. 基于语义文本智能打标签接口。
 
 # 部署
+
+## 容器化部署
+
+### 部署docker和docker-compose
+### 构建并启动所有服务
+```shell
+docker-compose up -d --build
+```
+
 ## 裸机部署
 ### 安装依赖包
 ```shell
