@@ -696,8 +696,95 @@ except Exception as e:
 
 @app.get("/health")
 async def health_check():
-    """健康检查接口"""
-    return {"message": "CLIP-Qdrant Service is running"}
+    """健康检查接口, 验证CLIP服务、Qdrant服务及向量维度一致性"""
+    if service is None:
+        return JSONResponse(
+            status_code=500,
+            content={"status": "error", "message": "Service not initialized", "details": {}}
+        )
+    
+    details = {
+        "clip_service": {"status": "unknown", "message": ""},
+        "qdrant_service": {"status": "unknown", "message": ""},
+        "vector_dimensions": {"status": "unknown", "message": "", "clip_dim": None, "qdrant_dim": None}
+    }
+    
+    overall_status = "healthy"
+    
+    # 检查Qdrant服务
+    try:
+        # 检查集合是否存在
+        collections = service.qdrant_client.get_collections()
+        collection_exists = any(c.name == service.collection_name for c in collections.collections)
+        
+        if not collection_exists:
+            details["qdrant_service"] = {
+                "status": "error",
+                "message": f"Collection {service.collection_name} does not exist"
+            }
+            overall_status = "unhealthy"
+        else:
+            # 获取集合信息以检查向量维度
+            collection_info = service.qdrant_client.get_collection(service.collection_name)
+            qdrant_dim = collection_info.config.params.vectors.size
+            details["qdrant_service"] = {"status": "healthy", "message": "Qdrant service is reachable"}
+            details["vector_dimensions"]["qdrant_dim"] = qdrant_dim
+    except Exception as e:
+        details["qdrant_service"] = {
+            "status": "error",
+            "message": f"Qdrant service check failed: {str(e)}"
+        }
+        overall_status = "unhealthy"
+    
+    # 检查CLIP服务
+    try:
+        # 测试文本编码
+        test_text = "health check"
+        text_embedding = service.encode_text(test_text)
+        clip_dim = len(text_embedding)
+        
+        # 测试图像编码（使用一个简单的1x1像素图像）
+        img = Image.new('RGB', (1, 1), color='red')
+        img_byte_arr = BytesIO()
+        img.save(img_byte_arr, format='PNG')
+        img_data = img_byte_arr.getvalue()
+        image_embedding = service.encode_image(img_data)
+        
+        if len(image_embedding) != clip_dim:
+            details["clip_service"] = {
+                "status": "error",
+                "message": f"CLIP text and image embeddings have different dimensions: text={clip_dim}, image={len(image_embedding)}"
+            }
+            overall_status = "unhealthy"
+        else:
+            details["clip_service"] = {"status": "healthy", "message": "CLIP service is reachable"}
+            details["vector_dimensions"]["clip_dim"] = clip_dim
+    except Exception as e:
+        details["clip_service"] = {
+            "status": "error",
+            "message": f"CLIP service check failed: {str(e)}"
+        }
+        overall_status = "unhealthy"
+    
+    # 检查向量维度一致性
+    if details["vector_dimensions"]["clip_dim"] is not None and details["vector_dimensions"]["qdrant_dim"] is not None:
+        if details["vector_dimensions"]["clip_dim"] == details["vector_dimensions"]["qdrant_dim"]:
+            details["vector_dimensions"]["status"] = "healthy"
+            details["vector_dimensions"]["message"] = "Vector dimensions match"
+        else:
+            details["vector_dimensions"]["status"] = "error"
+            details["vector_dimensions"]["message"] = f"Vector dimensions do not match: CLIP={details['vector_dimensions']['clip_dim']}, Qdrant={details['vector_dimensions']['qdrant_dim']}"
+            overall_status = "unhealthy"
+    elif details["clip_service"]["status"] == "healthy" and details["qdrant_service"]["status"] == "healthy":
+        details["vector_dimensions"]["status"] = "error"
+        details["vector_dimensions"]["message"] = "Could not verify vector dimensions"
+        overall_status = "unhealthy"
+    
+    status_code = 200 if overall_status == "healthy" else 500
+    return JSONResponse(
+        status_code=status_code,
+        content={"status": overall_status, "message": f"Service is {overall_status}", "details": details}
+    )
 
 
 @app.post("/api/v1/images/upload", response_model=ImageUploadResponse)
