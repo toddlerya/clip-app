@@ -8,9 +8,8 @@ dependencies = [
     "clip-client>=0.8.3",
     "clip-server[search]>=0.8.3",
     "cn-clip>=1.6.0",
-    "faiss-cpu>=1.12.0",
     "fastapi>=0.116.1",
-    "jina[qdrant]>=3.34.0",
+    "jina>=3.34.0",
     "loguru>=0.7.3",
     "numpy>=2.3.3",
     "pillow>=11.3.0",
@@ -18,3 +17,9 @@ dependencies = [
     "qdrant-client>=1.15.1",
     "uvicorn>=0.23.1",
 ]
+
+
+[[tool.uv.index]]
+url = "https://mirrors.aliyun.com/pypi/simple"
+name = "aliyun"
+default = true

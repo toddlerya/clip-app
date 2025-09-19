@@ -14,13 +14,13 @@ executors:
         py_modules:
           - clip_server.executors.clip_torch
 
-  - name: indexer
-    uses:
-      jtype: AnnLiteIndexer
-      with:
-        n_dim: 512
-        limit: 10
-      metas:
-        py_modules:
-          - annlite.executor
-    workspace: "./workspace"
+  # - name: indexer
+  #   uses:
+  #     jtype: AnnLiteIndexer
+  #     with:
+  #       n_dim: 512
+  #       limit: 10
+  #     metas:
+  #       py_modules:
+  #         - annlite.executor
+  #   workspace: "./workspace"

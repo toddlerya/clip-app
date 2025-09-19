@@ -12,3 +12,5 @@ wheels/
 qdrant_data
 faiss_data
 workspace
+
+qdrant_data/data

@@ -1,0 +1,4 @@
+log_level: INFO
+http_port: 6333
+grpc_port: 6334
+service_port: 6335

@@ -1100,4 +1100,4 @@ if __name__ == "__main__":
     logger.info("Make sure your CLIP server is running on localhost:61000")
     logger.info("Make sure your Qdrant server is running on localhost:6333")
 
-    uvicorn.run("clip_qdrant_server_claude:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("clip_qdrant_server:app", host="0.0.0.0", port=8000, reload=True)
