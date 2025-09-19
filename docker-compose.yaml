@@ -1,7 +1,7 @@
 services:
   qdrant:
     image: qdrant/qdrant:latest
-    restart: unless-stop
+    restart: unless-stopped
     container_name: qdrant
     ports:
       - 6333:6333
@@ -24,7 +24,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.clip-server
-    restart: unless-stop
+    restart: unless-stopped
     container_name: clip-server
     networks:
       - clip-qdrant-net
@@ -44,7 +44,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.fastapi
-    restart: unless-stop
+    restart: unless-stopped
     container_name: clip-fastapi
     networks:
       - clip-qdrant-net

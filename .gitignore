@@ -13,4 +13,6 @@ qdrant_data
 faiss_data
 workspace
 
+qdrant/data
+qdrant/storage
 qdrant_data/data
