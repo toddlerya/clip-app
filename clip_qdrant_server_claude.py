@@ -146,7 +146,7 @@ class FileUtils:
         custom_metadata: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
-        准备文件元数据，包括文件名、大小、MD5等
+        准备文件元数据, 包括文件名、大小、MD5等
 
         Args:
             image_data: 图片字节数据
@@ -266,7 +266,7 @@ class CLIPQdrantService:
             )
 
             if not collection_exists:
-                # 创建集合，CLIP ViT-B/32 和 CN-CLIP/ViT-B-16的向量维度是512
+                # 创建集合, CLIP ViT-B/32 和 CN-CLIP/ViT-B-16的向量维度是512
                 self.qdrant_client.create_collection(
                     collection_name=self.collection_name,
                     vectors_config=VectorParams(size=512, distance=Distance.COSINE),
@@ -448,7 +448,7 @@ class CLIPQdrantService:
                         raise RuntimeError("Image exists check passed but no point found")
                 message = f"图片已存在: {image_id}"
                 logger.warning(message)
-                # 直接返回已存在的image_id，不重复插入
+                # 直接返回已存在的image_id, 不重复插入
                 return message, image_id
 
             # 编码图片
@@ -491,16 +491,15 @@ class CLIPQdrantService:
             logger.error(f"删除图片失败: {e}")
             return False
 
-# 新增API接口
 
 
-    def get_all_images(self) -> List[Dict[str, Any]]:
+    def get_all_images(self, limit: int = 100) -> List[Dict[str, Any]]:
         """获取所有已入库的图片信息"""
         try:
-            # 获取所有点
+            # 使用传入的limit参数, 默认100条
             scroll_result = self.qdrant_client.scroll(
                 collection_name=self.collection_name,
-                limit=1000,  # 设置一个合理的限制
+                limit=limit,  # 不再写死为1000
             )
 
             # 处理结果
@@ -519,6 +518,7 @@ class CLIPQdrantService:
             return results
         except Exception as e:
             raise RuntimeError(f"Failed to get all images: {str(e)}")
+
 
     def search_by_text(
         self, query_text: str, top_k: int = 10, filter_tags: Optional[List[str]] = None
@@ -582,7 +582,7 @@ class CLIPQdrantService:
 
             # # 确保有标签可用
             # if not tags_to_check or len(tags_to_check) == 0:
-            #     # 如果没有标签可用，使用一些基本标签
+            #     # 如果没有标签可用, 使用一些基本标签
             #     tags_to_check = [
             #         "person",
             #         "animal",
@@ -596,7 +596,7 @@ class CLIPQdrantService:
             #         "indoor",
             #         "outdoor",
             #     ]
-            #     logger.warning(f"没有找到标签库，使用默认标签: {tags_to_check}")
+            #     logger.warning(f"没有找到标签库, 使用默认标签: {tags_to_check}")
 
             # 计算图片与每个标签的相似度
             tag_scores = []
@@ -629,7 +629,7 @@ class CLIPQdrantService:
             # 按分数排序
             tag_scores.sort(key=lambda x: x["score"], reverse=True)
 
-            # 如果没有标签超过阈值，返回前3个最相似的标签
+            # 如果没有标签超过阈值, 返回前3个最相似的标签
             if not tag_scores and tags_to_check:
                 message = "没有标签超过阈值, 返回前3个最相似的标签"
                 logger.warning(message)
@@ -655,7 +655,7 @@ class CLIPQdrantService:
             message = f"标签生成失败: {str(e)}"
             logger.error(message)
 
-            # 返回空列表而不是抛出异常，确保上传流程可以继续
+            # 返回空列表而不是抛出异常, 确保上传流程可以继续
             return message, []
 
     def get_existing_tags(self, image_id: str) -> List[str]:
@@ -694,8 +694,8 @@ except Exception as e:
     service = None
 
 
-@app.get("/")
-async def root():
+@app.get("/health")
+async def health_check():
     """健康检查接口"""
     return {"message": "CLIP-Qdrant Service is running"}
 
@@ -712,9 +712,9 @@ async def upload_image(
 
     Args:
         file: 上传的图片文件
-        tags: 可选的标签列表（JSON字符串格式，如 '["cat", "animal"]'）
-        metadata: 可选的元数据（JSON字符串格式，如 '{"filename": "cat.jpg", "author": "user1"}'）
-        force_update: 是否强制更新已存在的图片，默认False
+        tags: 可选的标签列表（JSON字符串格式, 如 '["cat", "animal"]'）
+        metadata: 可选的元数据（JSON字符串格式, 如 '{"filename": "cat.jpg", "author": "user1"}'）
+        force_update: 是否强制更新已存在的图片, 默认False
 
     注意:
         系统会自动添加以下元数据字段:
@@ -744,7 +744,7 @@ async def upload_image(
                 if not isinstance(tag_list, list):
                     tag_list = [str(tag_list)]
             except json.JSONDecodeError:
-                # 如果不是JSON格式，当作逗号分隔的字符串处理
+                # 如果不是JSON格式, 当作逗号分隔的字符串处理
                 tag_list = [t.strip() for t in tags.split(",") if t.strip()]
 
         # 解析元数据
@@ -779,15 +779,19 @@ async def upload_image(
 
 
 @app.get("/api/v1/images", response_model=ImageListResponse)
-async def list_images():
+async def list_images(limit: int = 100):
     """
-    获取所有已入库的图片信息，包括向量ID、标签和元数据
+    获取已入库的图片信息, 包括向量ID、标签和元数据
+    
+    Args:
+        limit: 最大返回条数, 默认100条
     """
     if service is None:
         raise HTTPException(status_code=500, detail="Service not initialized")
 
     try:
-        images = service.get_all_images()
+        # 将limit参数传递给服务方法
+        images = service.get_all_images(limit=limit)
 
         return ImageListResponse(
             success=True,
@@ -814,7 +818,7 @@ async def search_by_text(request: SearchRequest):
     根据文本查询搜索相似图片
 
     Args:
-        request: 搜索请求，包含查询文本、返回数量等
+        request: 搜索请求, 包含查询文本、返回数量等
     """
     if service is None:
         raise HTTPException(status_code=500, detail="Service not initialized")
@@ -919,8 +923,8 @@ async def upload_and_tag(
         file: 上传的图片文件
         auto_tag: 是否自动生成标签
         tag_threshold: 标签生成阈值
-        metadata: 可选的元数据（JSON字符串格式，如 '{"filename": "cat.jpg", "author": "user1"}'）
-        force_update: 是否强制更新已存在的图片，默认False   
+        metadata: 可选的元数据（JSON字符串格式, 如 '{"filename": "cat.jpg", "author": "user1"}'）
+        force_update: 是否强制更新已存在的图片, 默认False   
 
     注意:
         系统会自动添加以下元数据字段:
@@ -946,7 +950,7 @@ async def upload_and_tag(
 
         if auto_tag:
             try:
-                logger.info(f"开始生成标签，阈值: {tag_threshold}")
+                logger.info(f"开始生成标签, 阈值: {tag_threshold}")
                 tag_message, tag_results = service.generate_tags(
                     image_data, threshold=tag_threshold
                 )
@@ -958,14 +962,14 @@ async def upload_and_tag(
                     logger.warning(f"没有生成任何标签: {tag_message}")
             except Exception as e:
                 logger.error(f"标签生成过程中出错: {str(e)}")
-                # 即使标签生成失败，也继续上传图片
+                # 即使标签生成失败, 也继续上传图片
 
         # 解析元数据
         metadata_dict = None
         if metadata:
             import json
 
-            logger.info(f"上传图片，元数据: {metadata}")
+            logger.info(f"上传图片, 元数据: {metadata}")
 
             try:
                 metadata_dict = json.loads(metadata)
