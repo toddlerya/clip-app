@@ -7,6 +7,12 @@
 2. 语义文本比对检索接口；
 3. 基于语义文本智能打标签接口。
 
+# 使用
+
+FastAPI 服务：访问 http://localhost:8000/docs 查看接口文档
+CLIP Server：通过docker-compose exec clip-server curl http://localhost:61000 验证是否启动
+Qdrant：访问 http://localhost:6333/dashboard 查看管理界面
+
 # 部署
 
 ## 容器化部署
